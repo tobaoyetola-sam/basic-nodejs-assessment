@@ -1,0 +1,32 @@
+{
+  "name": "basic-nodejs-app",
+  "version": "1.0.0",
+  "description": "Production-ready Node.js API for CredPal DevOps Assessment",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "test": "jest --forceExit --detectOpenHandles --coverage",
+    "lint": "eslint src tests"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "pg": "^8.11.3",
+    "redis": "^4.6.10",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4",
+    "nodemon": "^3.0.2",
+    "eslint": "^8.57.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": ["src/**/*.js"]
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

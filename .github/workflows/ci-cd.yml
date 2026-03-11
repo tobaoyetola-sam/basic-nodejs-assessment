@@ -1,0 +1,228 @@
+name: CI / CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: credpal-node-app
+  # ECR repository URI — set AWS_ACCOUNT_ID and AWS_REGION as GitHub secrets
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+  ECR_REPOSITORY: credpal-node-app
+  ECS_CLUSTER: credpal-cluster
+  ECS_SERVICE: credpal-app-service
+  ECS_TASK_FAMILY: credpal-app
+  CONTAINER_NAME: credpal-app
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # JOB 1 – lint, test, security scan
+  # ────────────────────────────────────────────────────────────────────────
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install all dependencies (inc. devDeps)
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint --if-present
+
+      - name: Run Jest tests with coverage
+        run: npm test
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  # ────────────────────────────────────────────────────────────────────────
+  # JOB 2 – build multi-arch image & push to AWS ECR
+  # Runs only on direct pushes to main (not PRs)
+  # ────────────────────────────────────────────────────────────────────────
+  build-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      id-token: write   # required for OIDC-based AWS auth (no long-lived keys)
+
+    outputs:
+      image-uri:    ${{ steps.image-uri.outputs.uri }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── AWS authentication via OIDC (no static access keys stored in GitHub) ──
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region:     ${{ secrets.AWS_REGION }}
+
+      # ── Ensure the ECR repository exists ─────────────────────────────────────
+      - name: Create ECR repository if it does not exist
+        run: |
+          aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || \
+          aws ecr create-repository \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-scanning-configuration scanOnPush=true \
+            --encryption-configuration encryptionType=AES256 \
+            --region "${{ secrets.AWS_REGION }}"
+
+      # ── Log Docker into ECR ───────────────────────────────────────────────────
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Multi-arch build support ──────────────────────────────────────────────
+      - name: Set up QEMU (emulates arm64 on the amd64 runner)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Compute image tags ────────────────────────────────────────────────────
+      - name: Compute image URI
+        id: image-uri
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          URI="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+          echo "uri=${URI}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "uri_latest=${URI}:latest" >> "$GITHUB_OUTPUT"
+          echo "tags=${URI}:${SHORT_SHA},${URI}:latest" >> "$GITHUB_OUTPUT"
+
+      # ── Build & push multi-platform image ────────────────────────────────────
+      - name: Build and push multi-arch image to ECR
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: release
+          push: true
+          # linux/amd64  – standard EC2 / Fargate x86 tasks
+          # linux/arm64  – AWS Graviton2/3 Fargate tasks (better price/performance)
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.image-uri.outputs.tags }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+
+      # ── Vulnerability scan (ECR enhanced scanning is also on at push time) ───
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.image-uri.outputs.uri }}
+          format: "sarif"
+          output: "trivy-results.sarif"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+
+      - name: Upload Trivy SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ────────────────────────────────────────────────────────────────────────
+  # JOB 3 – deploy to ECS (manual approval gate for production)
+  # ────────────────────────────────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to ECS (Production)
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    # Requires a GitHub Environment named "production" with required reviewers.
+    # No deployment proceeds without a human sign-off.
+    environment:
+      name: production
+      url: https://${{ secrets.APP_DOMAIN }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── Authenticate to AWS ───────────────────────────────────────────────────
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region:     ${{ secrets.AWS_REGION }}
+
+      # ── Pull the current task definition from ECS ─────────────────────────────
+      - name: Download current ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --query taskDefinition \
+            > task-definition.json
+          echo "Current task definition downloaded."
+
+      # ── Swap the image URI in the task definition JSON ────────────────────────
+      - name: Render updated ECS task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name:  ${{ env.CONTAINER_NAME }}
+          image:           ${{ needs.build-push.outputs.image-uri }}
+
+      # ── Register the new revision and update the service ─────────────────────
+      - name: Deploy new task definition to ECS (rolling update)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition:             ${{ steps.task-def.outputs.task-definition }}
+          service:                     ${{ env.ECS_SERVICE }}
+          cluster:                     ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability:  true
+          # ECS service is configured with min 100% / max 200% → zero-downtime
+          # Circuit breaker with rollback=true auto-reverts on health-check failures
+
+      # ── Post-deploy smoke test ────────────────────────────────────────────────
+      - name: Smoke test — verify /health returns 200
+        run: |
+          echo "Waiting 20s for tasks to stabilise…"
+          sleep 20
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://${{ secrets.APP_DOMAIN }}/health")
+          if [ "$STATUS" != "200" ]; then
+            echo "Smoke test FAILED — /health returned HTTP $STATUS"
+            exit 1
+          fi
+          echo "Smoke test PASSED — /health returned HTTP 200"

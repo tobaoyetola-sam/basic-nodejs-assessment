@@ -1,0 +1,27 @@
+# terraform/terraform.tfvars.example
+# Copy to terraform.tfvars and fill in real values.
+# NEVER commit terraform.tfvars to version control.
+
+aws_region   = "us-east-1"
+environment  = "production"
+
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b"]
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
+
+app_image     = "ghcr.io/your-org/credpal-node-app"
+app_version   = "latest"
+app_port      = 3000
+desired_count = 2
+task_cpu      = 512
+task_memory   = 1024
+
+# Sensitive – inject via CI/CD or environment variables, not this file
+# db_username = "appuser"
+# db_password = "..."
+# db_host     = "xxx.rds.amazonaws.com"
+db_name = "appdb"
+
+app_domain        = "api.credpal.com"
+route53_zone_name = "credpal.com"
