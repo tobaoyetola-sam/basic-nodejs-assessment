@@ -131,6 +131,7 @@ cp .env.example .env
 ### 2 – Start everything with Docker Compose
 
 ```bash
+npm install - # This creates package-lock.json
 docker compose up --build
 ```
 
