@@ -9,12 +9,13 @@ Production-ready DevOps pipeline for a Node.js REST API, built as part of the Cr
 1. [Architecture Overview](#architecture-overview)
 2. [Repository Structure](#repository-structure)
 3. [Running Locally](#running-locally)
-4. [API Endpoints](#api-endpoints)
-5. [CI/CD Pipeline](#cicd-pipeline)
-6. [Infrastructure (Terraform)](#infrastructure-terraform)
-7. [Deployment](#deployment)
-8. [Security Decisions](#security-decisions)
-9. [Key Design Decisions](#key-design-decisions)
+4. [Local Demo](#local-demo)
+5. [API Endpoints](#api-endpoints)
+6. [CI/CD Pipeline](#cicd-pipeline)
+7. [Infrastructure (Terraform)](#infrastructure-terraform)
+8. [Deployment](#deployment)
+9. [Security Decisions](#security-decisions)
+10. [Key Design Decisions](#key-design-decisions)
 
 ---
 
@@ -130,7 +131,6 @@ cp .env.example .env
 ### 2 – Start everything with Docker Compose
 
 ```bash
-npm install
 docker compose up --build
 ```
 
@@ -154,7 +154,58 @@ All tests use mocked Postgres and Redis, so no live services are needed.
 
 ---
 
-## API Endpoints
+## Local Demo
+
+The screenshots below show the full local run from a clean machine.
+
+### Step 1 — `docker compose up --build` kicks off
+
+Docker pulls `node:20-alpine`, installs dependencies via `npm ci`, and builds the multi-stage image. Postgres and Redis images are pulled in parallel.
+
+![Docker build starting](docs/screenshots/01-docker-build.png)
+
+---
+
+### Step 2 — Build completes, all containers created
+
+All 16 build steps finish successfully. Docker creates the network, volumes, and spins up all 3 containers: `nodejs-redis`, `nodejs-postgres`, and `nodejs-app`.
+
+![Docker build complete and containers created](docs/screenshots/02-docker-build-complete.png)
+
+---
+
+### Step 3 — App is fully live and accepting requests
+
+The app logs confirm the full boot sequence in order:
+- `Redis connected`
+- `Database schema ready` (the `jobs` table is created automatically)
+- `Server listening on port 3000`
+
+![All containers running with app logs](docs/screenshots/03-containers-running.png)
+
+---
+
+### Step 4 — All 3 containers visible in Docker Desktop
+
+Docker Desktop confirms all three images (`basic-nodejs-app:local`, `postgres:16-alpine`, `redis:7-alpine`) are built and the containers are running. The structured JSON request logs from the app are also visible in the Docker Desktop terminal.
+
+![Docker Desktop showing containers and logs](docs/screenshots/04-docker-desktop.png)
+
+---
+
+### Step 5 — All 3 API endpoints tested and passing
+
+All endpoints return the expected responses:
+
+| Endpoint | Method | Result |
+|----------|--------|--------|
+| `/health` | `GET` | `{"status":"ok","timestamp":"..."}` |
+| `/status` | `GET` | `{"status":"ready","checks":{"postgres":"healthy","redis":"healthy"},...}` |
+| `/process` | `POST` | `{"success":true,"job":{"id":2,"payload":{"name":"test-job","value":42},...}}` |
+
+![All API endpoints tested successfully](docs/screenshots/05-api-endpoints-tested.png)
+
+---
 
 ### `GET /health`
 Liveness probe — always returns `200` if the process is alive.
