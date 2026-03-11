@@ -130,6 +130,7 @@ cp .env.example .env
 ### 2 – Start everything with Docker Compose
 
 ```bash
+npm install
 docker compose up --build
 ```
 
